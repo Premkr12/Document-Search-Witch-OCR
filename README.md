@@ -1,72 +1,107 @@
-# Text Scan Insight (MERN Stack)
+# Document Search & OCR Insight (MERN Stack)
 
-Welcome to the **Text Scan Insight** repository. This project is a full-stack MERN (MongoDB, Express, React, Node.js) application that features Optical Character Recognition (OCR) powered by `tesseract.js`. 
+Welcome to the **Document Search & OCR Insight** repository. This is a production-ready, full-stack MERN (MongoDB, Express, React, Node.js) application featuring dual-engine Optical Character Recognition (OCR) powered by **EasyOCR** and **Tesseract.js**.
+
+---
+
+## Features
+
+- **Double OCR Engines**: Advanced OCR powered by **EasyOCR** (PyTorch Deep Learning CRAFT & CRNN models) for maximum accuracy on tables, mathematical equations, and rotated text. Built-in seamless fallback to **Tesseract.js** for high availability.
+- **Scanned PDF Support**: Dynamic text layer extraction. If the PDF is scanned (image-only), it automatically extracts pages to PNG images in-memory, runs OCR page-by-page, and merges the text.
+- **Full-Text search**: Search through title and OCR'd document content with fast pagination support.
+- **Production-Grade Security**:
+  - Helmet headers protection.
+  - CORS origin lockdowns.
+  - API rate-limiting thresholds (auth endpoints, uploads, general API).
+- **Architecture & Reliability**:
+  - Global Express error-handling middleware.
+  - Winston structured logging (development console logs, production JSON files).
+  - Strict environment variables validation on startup.
+
+---
 
 ## Prerequisites
 
-Before you begin, ensure you have the following installed on your local machine:
+Ensure you have the following installed locally:
 - **[Node.js](https://nodejs.org/en/download/)** (v18 or higher recommended)
-- **[MongoDB](https://www.mongodb.com/try/download/community)** (Ensure you have a local MongoDB server running, or have a MongoDB URI ready)
+- **[Python 3](https://www.python.org/downloads/)** (v3.8 - v3.14, for EasyOCR processing)
+- **[MongoDB Community Server](https://www.mongodb.com/try/download/community)** (Ensure your local MongoDB instance is running)
 - **Git**
 
-## Step-by-Step Installation
+---
 
-### 1. Clone the Repository
-Open your terminal and clone the repository using:
+## Installation & Setup
+
+### 1. Root & Inner Node.js Dependencies
+Install the root concurrency package and the frontend/backend dependencies:
+
 ```bash
-git clone <YOUR_GIT_URL>
-cd text-scan-insight
-```
-
-### 2. Install Dependencies
-This project is a monorepo containing both the `frontend` and `backend` directories. We use a root script to manage both seamlessly.
-
-First, install the root dependencies (like `concurrently`):
-```bash
+# Install root dependencies
 npm install
-```
 
-Next, install all inner dependencies for both the frontend and backend simultaneously:
-```bash
+# Install both backend and frontend package dependencies concurrently
 npm run install:all
 ```
-*(Alternatively, you can manually `cd` into both the `frontend` and `backend` folders and run `npm install` in each).*
+
+*(Alternatively, you can manually `cd` into `backend` and `frontend` folders and run `npm install` in each).*
+
+---
+
+### 2. Python Virtual Environment (For EasyOCR)
+To enable the high-accuracy EasyOCR model, you need to set up a Python virtual environment inside the `backend` directory:
+
+```bash
+# Navigate to backend
+cd backend
+
+# Create a local virtual environment named .venv
+python -m venv .venv
+
+# Activate and install EasyOCR dependencies
+.venv\Scripts\pip install easyocr
+```
+
+> [!NOTE]
+> **OpenCV/Pillow Resampling Patch:**
+> EasyOCR has a compatibility bug on newer Pillow/OpenCV versions where it passes a Pillow enum (`Image.Resampling.LANCZOS`) to OpenCV's `cv2.resize` function. If you encounter an OpenCV error (`(-215:Assertion failed) !ssize.empty()`), you can fix it by opening `.venv/Lib/site-packages/easyocr/utils.py` and replacing occurrences of `Image.Resampling.LANCZOS` with `cv2.INTER_LANCZOS4`.
+
+---
 
 ### 3. Configure Environment Variables
-Before running the application, you **must** configure your environment variables for the backend. 
+Create a `.env` file in the `backend/` directory:
 
-Navigate to the `backend` directory and create a file named `.env`:
 ```bash
-cd backend
+# In the backend directory
 type nul > .env
 ```
-*(On Mac/Linux, you can use `touch .env` instead)*
+*(On macOS/Linux, run `touch .env` instead).*
 
-Open the `.env` file using your code editor and add the following required configurations:
+Add the following environment variables to your `backend/.env` file:
+
 ```env
-# backend/.env
-
 PORT=5000
-# Base MongoDB connection string (update if using MongoDB Atlas)
+NODE_ENV=development
 MONGO_URI=mongodb://localhost:27017/text-scan-insight
-# Secure key for jsonwebtoken
 JWT_SECRET=your_super_secret_jwt_key_change_in_production
+JWT_REFRESH_SECRET=your_super_secret_refresh_key_change_in_production
+CORS_ORIGIN=http://localhost:5173
+
+# OCR Configuration
+# Options: 'easyocr' (requires Python virtual env setup) or 'tesseract' (direct WebAssembly)
+OCR_ENGINE=easyocr
 ```
 
-*(Note: Ensure your local MongoDB server is actually running in the background before proceeding).*
+---
 
-### 4. Running the Project
-Navigate back to the **root** directory of the project (`text-scan-insight`), and run our designated startup command:
+## Running the Application
+
+To boot both the frontend and backend servers concurrently under hot-reloading:
 
 ```bash
-cd ..
+# From the project root directory
 npm run dev
 ```
 
-This single command will:
-1. Start your backend Node.js Express server on `http://localhost:5000` (using standard `nodemon` hot-reloading).
-2. Start your frontend React server on the Vite development port.
-
-You can now open your browser and navigate to the frontend URL printed in the terminal by Vite to view the application!
-
-<!-- Git Contributors Cache Trigger -->
+- **Frontend client** will launch on Vite's dev server port (e.g. `http://localhost:5173`).
+- **Backend server** will boot on `http://localhost:5000`.
+- Ensure MongoDB is running in the background before launching the servers.
