@@ -1,0 +1,99 @@
+# Project Analysis: Production Readiness Report
+
+This report summarizes the current state of the `text-scan-insight` codebase (both backend and frontend) and outlines the remaining tasks and configurations required before deploying the application to production for public users.
+
+---
+
+## 1. Executive Summary
+The codebase has been upgraded from a basic Minimum Viable Product (MVP) to a **highly robust, secure, and production-ready foundation**. Critical security vulnerabilities (open CORS, lack of rate limiting, insecure tokens, global exception crashes) have been resolved. The core document processing feature has been overhauled to support full PDF OCR without external native dependencies (like Ghostscript).
+
+To launch to live production users, the primary requirements are **externalizing state** (migrating local file uploads to Cloud Storage like AWS S3 and database to a managed provider like MongoDB Atlas) and **configuring production API credentials**.
+
+---
+
+## 2. Completed Improvements (Production-Ready)
+
+The following production-ready improvements have been fully coded, tested, and integrated:
+
+### 🔒 Security & Defense-in-Depth
+*   **CORS Lockdown**: CORS requests are strictly limited to the designated client origin (configured via `CORS_ORIGIN` env variable) rather than being open to all domains.
+*   **Helmet Headers**: Embedded standard security headers (XSS filtering, HSTS, frame options). We specifically tuned these to permit loading image assets and PDF preview `<iframe>` tags cross-origin from the backend (port 5000) to the frontend (port 8080) safely.
+*   **Tiers of Rate Limiting**: Added `express-rate-limit` to protect key routes:
+    *   `100 requests / 15 minutes` for general API.
+    *   `10 requests / 15 minutes` for auth endpoints (`/login`, `/register`).
+    *   `20 uploads / 15 minutes` for document uploading to prevent storage exhaust attacks.
+*   **JWT Access & Refresh Token System**:
+    *   Swapped insecure long-lived tokens (7 days) for short-lived access tokens (15 minutes).
+    *   Implemented `POST /api/auth/refresh` using distinct `JWT_REFRESH_SECRET` keys (7-day duration).
+    *   Upgraded the frontend Axios client (`api.ts`) with request interceptors to auto-attach tokens and transparently queue/refresh expired tokens on `401 Unauthorized` responses without disrupting the user.
+
+### 🛠️ Core OCR Overhaul (Ghostscript-Free PDF processing)
+*   **Text-Layer PDF Parsing**: Integrated `pdf-parse` to instantly extract text from searchable PDFs.
+*   **Scanned PDF Image Fallback**: Integrated `pdf-to-png-converter` (utilizing Rust WASM `@napi-rs/canvas` bindings) to extract pages of scanned PDFs as image buffers in-memory.
+*   **Zero Shell Dependencies**: Avoided command-line dependencies like `GraphicsMagick` or `Ghostscript` (which commonly throw `EPIPE` exceptions in cloud hosting environments). The fallback processes pages cleanly as buffers directly into `Tesseract.js` for OCR.
+*   **End-to-End Test Verification**: Confirmed PDF parsing extracts multi-page layouts successfully.
+
+### 📩 Full Password Recovery System
+*   **Backend Endpoints**: Implemented `POST /api/auth/forgot-password` (secure random token + expiry generation) and `POST /api/auth/reset-password` (token verification + password rehashing).
+*   **Log-Only Fallback**: In development, if SMTP variables are not set, recovery emails and reset links print directly to logs rather than failing, enabling offline developer testing.
+*   **Frontend Screens**: Built custom email entry, validation, set-password matching, and error alerts directly into the frontend `AuthForm.tsx`.
+
+### 📈 Global Architecture & Reliability
+*   **Structured Winston Logging**: Replaced `console.log` statements with Winston logger. Automatically colorizes console output for developers and logs JSON format to disk (`logs/error.log`, `logs/combined.log`) in production.
+*   **Fail-Fast Environment Validation**: Added `config/validateEnv.js`. If the application starts in production mode (`NODE_ENV=production`) with critical environment variables (`MONGO_URI`, `JWT_SECRET`, `JWT_REFRESH_SECRET`) missing, it crashes immediately rather than starting in an insecure default state.
+*   **Global Error Middleware**: Centralized Express error handler sanitizes stack traces in production (hiding database schemas or server directory paths from clients) while mapping common exceptions (Mongoose duplicates, Multer file limit exceptions) to proper HTTP status codes.
+
+---
+
+## 3. Mandatory Tasks BEFORE Production Deployment
+
+Before launching the app live, you **MUST** complete these five configuration and architectural steps:
+
+### ⚠️ Task 1: Migrate Local Uploads to Cloud Storage (AWS S3 / Cloudinary)
+Currently, uploaded files are stored locally in the `backend/uploads` directory. Modern cloud hosting platforms (like Vercel, Heroku, or Render) use **ephemeral disks**—meaning **all uploaded documents will be permanently deleted every time the server restarts or scales**.
+*   **Action Required**:
+    1.  Create an AWS S3 bucket or a Cloudinary account.
+    2.  Install `@aws-sdk/client-s3` and `multer-s3` in the backend.
+    3.  Update `backend/middleware/upload.js` to upload directly to S3 instead of `multer.diskStorage`.
+    4.  Update document retrieval to serve the files using S3 URLs.
+
+### ⚠️ Task 2: Configure a Managed Database (MongoDB Atlas)
+The database is currently pointing to a local MongoDB instance (`mongodb://localhost:27017/`).
+*   **Action Required**:
+    1.  Create a free or dedicated cluster on [MongoDB Atlas](https://www.mongodb.com/cloud/atlas).
+    2.  Obtain the connection string (e.g., `mongodb+srv://<user>:<password>@cluster0.mongodb.net/text-scan-insight`).
+    3.  Add it to your production environment variables as `MONGO_URI`.
+
+### ⚠️ Task 3: Set Up a Production Email Relay (Brevo / Resend)
+The password recovery flow currently logs emails to the server console because no SMTP credentials are set.
+*   **Action Required**:
+    1.  Create a free account on **Brevo** or **Resend**.
+    2.  Fill in the SMTP credentials in your production host environment variables:
+        *   `SMTP_HOST` (e.g., `smtp-relay.brevo.com`)
+        *   `SMTP_PORT` (e.g., `587`)
+        *   `SMTP_USER` (your account identifier)
+        *   `SMTP_PASS` (your SMTP API key)
+        *   `EMAIL_FROM` (e.g., `noreply@yourdomain.com`)
+
+### ⚠️ Task 4: Generate Secure Cryptographic Secrets
+The JWT keys currently in `.env` are default developer placeholders.
+*   **Action Required**:
+    1.  Generate two distinct, secure random keys (e.g., using `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`).
+    2.  Define them as `JWT_SECRET` and `JWT_REFRESH_SECRET` in your production environment.
+
+### ⚠️ Task 5: Force HTTPS / SSL Encryption
+Because the application handles user passwords, authentication tokens, and private uploaded files, all traffic must be encrypted over SSL.
+*   **Action Required**:
+    1.  Ensure your hosting provider automatically issues and renews an SSL certificate (standard on Vercel, Render, Heroku, or AWS ALB).
+    2.  Ensure that `CORS_ORIGIN` in the backend environment is set to the HTTPS origin of the frontend (e.g., `https://your-app.vercel.app`).
+
+---
+
+## 4. Recommended Hosting Architecture
+
+For ease of maintenance, speed, and cost efficiency, the following deployment stack is recommended:
+
+*   **Frontend**: Host on **Vercel** or **Netlify**. Both integrate with GitHub, build Vite assets instantly, deploy globally via CDN, and provide automatic SSL/HTTPS out of the box.
+*   **Backend**: Host on **Render** (Web Service), **Railway**, or **Heroku** as a Docker container or Node service. 
+*   **Database**: **MongoDB Atlas** (Shared M0/M10 tier is standard).
+*   **File Storage**: **AWS S3** (configured with bucket blocking public access, serving files using presigned secure URLs for download).
