@@ -68,3 +68,5 @@ This single command will:
 2. Start your frontend React server on the Vite development port.
 
 You can now open your browser and navigate to the frontend URL printed in the terminal by Vite to view the application!
+
+<!-- Git Contributors Cache Trigger -->
