@@ -36,6 +36,18 @@ const documentSchema = new mongoose.Schema({
     type: Date,
     default: Date.now
   },
+  average_confidence: {
+    type: Number,
+    default: null
+  },
+  total_pages: {
+    type: Number,
+    default: null
+  },
+  processed_pages: {
+    type: Number,
+    default: null
+  },
   metadata: {
     type: mongoose.Schema.Types.Mixed
   }

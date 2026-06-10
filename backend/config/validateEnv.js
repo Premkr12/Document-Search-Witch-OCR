@@ -36,7 +36,7 @@ const config = {
   JWT_REFRESH_SECRET: requireEnv('JWT_REFRESH_SECRET', 'dev_refresh_secret_DO_NOT_USE_IN_PROD'),
   CORS_ORIGIN: process.env.CORS_ORIGIN || 'http://localhost:5173',
   NODE_ENV: process.env.NODE_ENV || 'development',
-  OCR_ENGINE: process.env.OCR_ENGINE || 'tesseract',
+  OCR_ENGINE: process.env.OCR_ENGINE || 'easyocr',
   SMTP_HOST: process.env.SMTP_HOST || 'smtp-relay.brevo.com',
   SMTP_PORT: parseInt(process.env.SMTP_PORT || '587', 10),
   SMTP_USER: process.env.SMTP_USER || '',

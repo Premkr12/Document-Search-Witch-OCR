@@ -35,9 +35,9 @@ interface DocData {
 }
 
 /** Highlights all occurrences of `query` inside `text` with a <mark> element */
-const HighlightedText = ({ text, query }: { text: string; query: string }) => {
+const HighlightedText = ({ text, query, textSizeClass }: { text: string; query: string; textSizeClass: string }) => {
   if (!query.trim() || !text) {
-    return <span className="whitespace-pre-wrap text-sm leading-relaxed">{text}</span>;
+    return <span className={`whitespace-pre-wrap leading-relaxed ${textSizeClass}`}>{text}</span>;
   }
 
   const words = query.trim().split(/\s+/).filter(Boolean);
@@ -49,12 +49,12 @@ const HighlightedText = ({ text, query }: { text: string; query: string }) => {
   const testRegex = new RegExp(`^(?:${pattern})$`, "i");
 
   return (
-    <span className="whitespace-pre-wrap text-sm leading-relaxed">
+    <span className={`whitespace-pre-wrap leading-relaxed ${textSizeClass}`}>
       {parts.map((part, i) =>
         testRegex.test(part) ? (
           <mark
             key={i}
-            className="bg-yellow-300 text-yellow-900 rounded-sm px-0.5 font-medium"
+            className="bg-amber-100 dark:bg-amber-950/60 text-amber-900 dark:text-amber-200 border-b-2 border-amber-500 font-semibold px-0.5 rounded-sm not-italic"
           >
             {part}
           </mark>
@@ -84,6 +84,7 @@ const DocumentViewer = () => {
   const [copied, setCopied] = useState(false);
   const [imgError, setImgError] = useState(false);
   const [activeTab, setActiveTab] = useState<"preview" | "text">("preview");
+  const [textSize, setTextSize] = useState<"sm" | "base" | "lg">("base");
 
   useEffect(() => {
     if (documentId && token) {
@@ -320,6 +321,8 @@ const DocumentViewer = () => {
                 setActiveQuery={setActiveQuery}
                 onCopy={handleCopyText}
                 copied={copied}
+                textSize={textSize}
+                setTextSize={setTextSize}
               />
             )}
           </div>
@@ -366,6 +369,8 @@ const DocumentViewer = () => {
               setActiveQuery={setActiveQuery}
               onCopy={handleCopyText}
               copied={copied}
+              textSize={textSize}
+              setTextSize={setTextSize}
             />
           </div>
         </div>
@@ -392,6 +397,8 @@ interface OcrTextPanelProps {
   setActiveQuery: (v: string) => void;
   onCopy: () => void;
   copied: boolean;
+  textSize: "sm" | "base" | "lg";
+  setTextSize: (v: "sm" | "base" | "lg") => void;
 }
 
 const OcrTextPanel = ({
@@ -403,76 +410,119 @@ const OcrTextPanel = ({
   setActiveQuery,
   onCopy,
   copied,
-}: OcrTextPanelProps) => (
-  <Card className="flex flex-col h-full">
-    <CardHeader className="pb-2 shrink-0">
-      <div className="flex items-center justify-between gap-2">
-        <CardTitle className="text-sm font-semibold flex items-center gap-2">
-          <FileText className="h-4 w-4" />
-          Extracted OCR Text
-        </CardTitle>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 text-xs gap-1"
-          onClick={onCopy}
-          disabled={!text}
-        >
-          {copied ? (
-            <>
-              <CheckCheck className="h-3.5 w-3.5 text-green-500" />
-              Copied!
-            </>
-          ) : (
-            <>
-              <Copy className="h-3.5 w-3.5" />
-              Copy
-            </>
-          )}
-        </Button>
-      </div>
+  textSize,
+  setTextSize,
+}: OcrTextPanelProps) => {
+  const sizeClasses = {
+    sm: "text-xs",
+    base: "text-sm",
+    lg: "text-base",
+  };
 
-      {/* Inline search bar */}
-      <div className="flex items-center gap-2 mt-2">
-        <div className="relative flex-1">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-          <Input
-            className="pl-8 h-8 text-sm"
-            placeholder="Highlight text..."
-            value={localQuery}
-            onChange={(e) => {
-              setLocalQuery(e.target.value);
-              setActiveQuery(e.target.value);
-            }}
-          />
-        </div>
-        {query.trim() && (
-          <span className="text-xs text-muted-foreground whitespace-nowrap shrink-0">
-            {matchCount} match{matchCount !== 1 ? "es" : ""}
-          </span>
-        )}
-      </div>
-    </CardHeader>
+  return (
+    <Card className="flex flex-col h-full glass-card border border-white/60 dark:border-zinc-800/60 rounded-xl shadow-sm overflow-hidden">
+      <CardHeader className="pb-3 shrink-0 border-b bg-card/40">
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+            <FileText className="h-4 w-4 text-primary" />
+            Extracted Text
+          </CardTitle>
+          <div className="flex items-center gap-2">
+            {/* Font Size controls */}
+            <div className="flex items-center gap-1 bg-muted/60 p-0.5 rounded-lg border">
+              <Button
+                variant={textSize === "sm" ? "secondary" : "ghost"}
+                size="icon"
+                className="h-6 w-6 rounded-md text-[10px] font-bold"
+                onClick={() => setTextSize("sm")}
+                title="Small text"
+              >
+                A
+              </Button>
+              <Button
+                variant={textSize === "base" ? "secondary" : "ghost"}
+                size="icon"
+                className="h-6 w-6 rounded-md text-xs font-bold"
+                onClick={() => setTextSize("base")}
+                title="Medium text"
+              >
+                A
+              </Button>
+              <Button
+                variant={textSize === "lg" ? "secondary" : "ghost"}
+                size="icon"
+                className="h-6 w-6 rounded-md text-sm font-bold"
+                onClick={() => setTextSize("lg")}
+                title="Large text"
+              >
+                A
+              </Button>
+            </div>
 
-    <CardContent className="flex-1 overflow-hidden p-0">
-      <div className="h-[500px] overflow-y-auto px-4 pb-4 pt-2 xl:h-[calc(100vh-22rem)]">
-        {text ? (
-          <HighlightedText text={text} query={query} />
-        ) : (
-          <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-3">
-            <FileText className="h-12 w-12 opacity-30" />
-            <p className="text-sm text-center">
-              No OCR text yet.
-              <br />
-              <span className="text-xs opacity-70">
-                Click "Process OCR" on the document to extract text.
-              </span>
-            </p>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs font-bold border rounded-lg px-2"
+              onClick={onCopy}
+              disabled={!text}
+            >
+              {copied ? (
+                <>
+                  <CheckCheck className="mr-1 h-3.5 w-3.5 text-green-500" />
+                  Copied
+                </>
+              ) : (
+                <>
+                  <Copy className="mr-1 h-3.5 w-3.5 text-muted-foreground" />
+                  Copy
+                </>
+              )}
+            </Button>
           </div>
-        )}
-      </div>
-    </CardContent>
-  </Card>
-);
+        </div>
+
+        {/* Inline search bar */}
+        <div className="flex items-center gap-2 mt-3">
+          <div className="relative flex-1">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+            <Input
+              className="pl-8 h-8.5 text-xs rounded-lg border-muted-foreground/15 bg-background/50 focus-visible:ring-primary/40"
+              placeholder="Filter & highlight terms in document..."
+              value={localQuery}
+              onChange={(e) => {
+                setLocalQuery(e.target.value);
+                setActiveQuery(e.target.value);
+              }}
+            />
+          </div>
+          {query.trim() && (
+            <span className="text-[10px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 rounded-md px-1.5 py-0.5 whitespace-nowrap shrink-0">
+              {matchCount} match{matchCount !== 1 ? "es" : ""}
+            </span>
+          )}
+        </div>
+      </CardHeader>
+
+      <CardContent className="flex-1 overflow-hidden p-0">
+        <div className="h-[500px] overflow-y-auto px-5 pb-5 pt-3 xl:h-[calc(100vh-22rem)]">
+          {text ? (
+            <HighlightedText text={text} query={query} textSizeClass={sizeClasses[textSize]} />
+          ) : (
+            <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-3 py-12">
+              <FileText className="h-12 w-12 opacity-30 text-indigo-500" />
+              <p className="text-xs text-center font-medium max-w-[200px]">
+                No extracted OCR text.
+                <br />
+                <span className="text-[10px] opacity-70">
+                  Ensure processing completes to extract text content.
+                </span>
+              </p>
+            </div>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
 
 export default DocumentViewer;

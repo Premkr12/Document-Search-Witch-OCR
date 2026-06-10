@@ -18,7 +18,7 @@ interface SearchResultsProps {
   onViewDocument: (documentId: string, pageNumber: number) => void;
 }
 
-/** Highlights all query words inside text with a yellow <mark> */
+/** Highlights all query words inside text with a warm amber <mark> */
 const HighlightSnippet = ({ text, query }: { text: string; query: string }) => {
   if (!query.trim() || !text) return <>{text}</>;
 
@@ -35,7 +35,10 @@ const HighlightSnippet = ({ text, query }: { text: string; query: string }) => {
     <>
       {parts.map((part, i) =>
         testRegex.test(part) ? (
-          <mark key={i} className="bg-yellow-300 text-yellow-900 rounded-[2px] px-0.5 font-semibold not-italic">
+          <mark 
+            key={i} 
+            className="bg-amber-100 dark:bg-amber-950/60 text-amber-900 dark:text-amber-200 border-b-2 border-amber-500 font-semibold px-0.5 rounded-sm not-italic"
+          >
             {part}
           </mark>
         ) : (
@@ -49,11 +52,13 @@ const HighlightSnippet = ({ text, query }: { text: string; query: string }) => {
 export const SearchResults = ({ results, query, onViewDocument }: SearchResultsProps) => {
   if (results.length === 0) {
     return (
-      <Card className="flex flex-col items-center justify-center p-12 text-center">
-        <FileText className="mb-4 h-16 w-16 text-muted-foreground" />
-        <h3 className="mb-2 text-lg font-semibold">No results found</h3>
-        <p className="text-sm text-muted-foreground">
-          Try adjusting your search query or filters
+      <Card className="flex flex-col items-center justify-center p-12 text-center glass-card border border-white/60 dark:border-zinc-800/60 rounded-2xl shadow-sm">
+        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-indigo-500/5 text-indigo-500 mb-4 border border-indigo-500/10">
+          <FileText className="h-6 w-6" />
+        </div>
+        <h3 className="mb-2 text-lg font-bold tracking-tight">No Results Found</h3>
+        <p className="text-sm text-muted-foreground max-w-xs">
+          We couldn't find matches for that search. Try adjusting your query or filters.
         </p>
       </Card>
     );
@@ -61,17 +66,17 @@ export const SearchResults = ({ results, query, onViewDocument }: SearchResultsP
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-muted-foreground">
+      <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
         Found {results.length} result{results.length !== 1 ? "s" : ""}{" "}
         {query.trim() && (
-          <span className="font-medium text-foreground">
+          <span className="font-semibold text-foreground">
             for &ldquo;{query}&rdquo;
           </span>
         )}
       </p>
       {results.map((result, index) => (
-        <Card key={index} className="overflow-hidden transition-shadow hover:shadow-md">
-          <div className="flex gap-4 p-4">
+        <Card key={index} className="overflow-hidden glass-card border border-white/60 dark:border-zinc-800/60 shadow-sm hover:shadow-indigo-100 hover:border-primary/20 dark:hover:shadow-none dark:hover:border-zinc-700/60 hover:-translate-y-0.5 transition-all duration-300 rounded-xl">
+          <div className="flex gap-4 p-5">
             {result.thumbnail_url && (
               <img
                 src={result.thumbnail_url}
@@ -79,32 +84,40 @@ export const SearchResults = ({ results, query, onViewDocument }: SearchResultsP
                 className="h-32 w-24 rounded border object-cover shrink-0"
               />
             )}
-            <div className="flex-1 min-w-0 space-y-2">
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <h3 className="font-semibold truncate">
-                    <HighlightSnippet text={result.document_title} query={query} />
-                  </h3>
-                  <p className="text-xs text-muted-foreground">Page {result.page_number}</p>
+            <div className="flex-1 min-w-0 space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex items-center gap-2.5">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-500/5 text-primary border border-indigo-500/10 shrink-0">
+                    <FileText className="h-5 w-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <h3 className="font-bold text-sm truncate text-foreground tracking-tight">
+                      <HighlightSnippet text={result.document_title} query={query} />
+                    </h3>
+                    <p className="text-[10px] text-muted-foreground font-semibold">Page {result.page_number}</p>
+                  </div>
                 </div>
-                <Badge variant="outline" className="shrink-0 text-xs">
+                <Badge className="shrink-0 text-[10px] bg-primary/10 text-primary border-primary/15 rounded-lg font-bold" variant="outline">
                   {Math.round(result.confidence_score * 100)}% match
                 </Badge>
               </div>
 
               {/* Snippet with highlighted terms */}
-              <p className="text-sm leading-relaxed text-foreground bg-muted/40 rounded-md px-3 py-2 border-l-2 border-primary/40">
+              <p className="text-xs leading-relaxed text-foreground bg-muted/30 dark:bg-zinc-900/20 rounded-xl px-4 py-3 border-l-3 border-primary shadow-inner">
                 <HighlightSnippet text={result.text_snippet} query={query} />
               </p>
 
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => onViewDocument(result.document_id, result.page_number)}
-              >
-                <ExternalLink className="mr-2 h-4 w-4" />
-                View Document
-              </Button>
+              <div className="pt-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 text-xs font-semibold rounded-lg hover:bg-accent border-muted-foreground/15"
+                  onClick={() => onViewDocument(result.document_id, result.page_number)}
+                >
+                  <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
+                  Jump to Match
+                </Button>
+              </div>
             </div>
           </div>
         </Card>

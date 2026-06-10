@@ -118,100 +118,136 @@ export const DocumentUpload = ({ onUploadComplete }: DocumentUploadProps) => {
   };
 
   return (
-    <Card className="p-6">
-      <div className="space-y-4">
-        <div className="space-y-2">
-          <Label htmlFor="title">Document Title (optional)</Label>
-          <Input
-            id="title"
-            placeholder="Enter document title..."
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-          />
+    <Card className="glass-card border border-white/60 dark:border-zinc-800/60 shadow-xl rounded-2xl p-6 md:p-8">
+      <div className="grid lg:grid-cols-5 gap-8">
+        
+        {/* LEFT COLUMN: Metadata Parameters */}
+        <div className="lg:col-span-2 space-y-5">
+          <div className="space-y-2">
+            <Label htmlFor="title" className="text-sm font-bold tracking-tight">Document Title (Optional)</Label>
+            <Input
+              id="title"
+              placeholder="e.g. Q3 Financial Statement"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              className="h-10.5 rounded-lg border-muted-foreground/20 focus-visible:ring-primary/40"
+            />
+            <p className="text-[10px] text-muted-foreground">Defaults to file name if left blank.</p>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="language" className="text-sm font-bold tracking-tight">OCR Language Mode</Label>
+            <Select value={language} onValueChange={setLanguage}>
+              <SelectTrigger id="language" className="h-10.5 rounded-lg border-muted-foreground/20 focus:ring-primary/40">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="rounded-lg">
+                <SelectItem value="eng">English</SelectItem>
+                <SelectItem value="spa">Spanish</SelectItem>
+                <SelectItem value="fra">French</SelectItem>
+                <SelectItem value="deu">German</SelectItem>
+                <SelectItem value="ita">Italian</SelectItem>
+                <SelectItem value="por">Portuguese</SelectItem>
+                <SelectItem value="rus">Russian</SelectItem>
+                <SelectItem value="ara">Arabic</SelectItem>
+                <SelectItem value="chi_sim">Chinese (Simplified)</SelectItem>
+                <SelectItem value="jpn">Japanese</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-[10px] text-muted-foreground">Select the primary language of the text for highest accuracy.</p>
+          </div>
         </div>
 
-        <div className="space-y-2">
-          <Label htmlFor="language">OCR Language</Label>
-          <Select value={language} onValueChange={setLanguage}>
-            <SelectTrigger id="language">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="eng">English</SelectItem>
-              <SelectItem value="spa">Spanish</SelectItem>
-              <SelectItem value="fra">French</SelectItem>
-              <SelectItem value="deu">German</SelectItem>
-              <SelectItem value="ita">Italian</SelectItem>
-              <SelectItem value="por">Portuguese</SelectItem>
-              <SelectItem value="rus">Russian</SelectItem>
-              <SelectItem value="ara">Arabic</SelectItem>
-              <SelectItem value="chi_sim">Chinese (Simplified)</SelectItem>
-              <SelectItem value="jpn">Japanese</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
+        {/* RIGHT COLUMN: Dropzone & File List */}
+        <div className="lg:col-span-3 space-y-6">
+          <div
+            {...getRootProps()}
+            className={`cursor-pointer rounded-2xl border-2 border-dashed p-8 text-center transition-all duration-300 relative overflow-hidden group ${
+              isDragActive
+                ? 'border-primary bg-primary/5 shadow-inner shadow-primary/5'
+                : 'border-muted-foreground/20 hover:border-primary/50 bg-background/20 hover:bg-indigo-500/[0.01]'
+            }`}
+          >
+            <input {...getInputProps()} />
+            
+            {/* Animated Icon Container */}
+            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-indigo-500/5 text-indigo-500 border border-indigo-500/10 transition-all duration-300 group-hover:scale-105 group-hover:bg-primary group-hover:text-primary-foreground group-hover:shadow-lg group-hover:shadow-primary/20">
+              <Upload className="h-6 w-6" />
+            </div>
 
-        <div
-          {...getRootProps()}
-          className={`cursor-pointer rounded-lg border-2 border-dashed p-8 text-center transition-colors ${
-            isDragActive
-              ? 'border-primary bg-primary/5'
-              : 'border-border hover:border-primary/50'
-          }`}
-        >
-          <input {...getInputProps()} />
-          <Upload className="mx-auto mb-4 h-12 w-12 text-muted-foreground" />
-          {isDragActive ? (
-            <p className="text-foreground">Drop files here...</p>
-          ) : (
-            <div className="space-y-2">
-              <p className="text-foreground font-medium">
-                Drag & drop files here, or click to select
-              </p>
-              <p className="text-sm text-muted-foreground">
-                Supports PDF, JPEG, PNG, WebP, TIFF (max 20MB)
-              </p>
+            {isDragActive ? (
+              <p className="text-sm font-semibold text-primary animate-bounce">Drop the files here now...</p>
+            ) : (
+              <div className="space-y-1">
+                <p className="text-sm font-bold tracking-tight text-foreground">
+                  Drag & drop files here, or <span className="text-primary group-hover:underline">browse files</span>
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Supports PDF, JPEG, PNG, WebP, TIFF (Max 20MB)
+                </p>
+              </div>
+            )}
+          </div>
+
+          {files.length > 0 && (
+            <div className="space-y-3">
+              <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Selected Files ({files.length})</p>
+              <div className="space-y-2 max-h-[190px] overflow-y-auto pr-1">
+                {files.map((file, index) => {
+                  const isPdf = file.type === 'application/pdf';
+                  return (
+                    <div
+                      key={index}
+                      className="flex items-center justify-between rounded-xl border border-muted-foreground/15 p-3.5 bg-card/50 hover:bg-card transition-colors"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className={`flex h-9 w-9 items-center justify-center rounded-lg shrink-0 ${
+                          isPdf 
+                            ? 'bg-red-500/10 text-red-500 border border-red-500/15' 
+                            : 'bg-blue-500/10 text-blue-500 border border-blue-500/15'
+                        }`}>
+                          <FileIcon className="h-5 w-5" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold truncate text-foreground">{file.name}</p>
+                          <p className="text-[10px] text-muted-foreground font-mono">
+                            {(file.size / 1024 / 1024).toFixed(2)} MB
+                          </p>
+                        </div>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 rounded-lg hover:bg-destructive/10 hover:text-destructive text-muted-foreground"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removeFile(index);
+                        }}
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
+
+          <Button
+            onClick={handleUpload}
+            disabled={files.length === 0 || isUploading}
+            className="w-full h-10.5 rounded-lg font-semibold shadow-md shadow-primary/20 hover:shadow-primary/30 transition-all hover:scale-[1.01] active:scale-[0.99] bg-gradient-to-r from-primary to-indigo-600 text-white"
+          >
+            {isUploading ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Uploading & Enqueueing OCR...
+              </>
+            ) : (
+              "Upload & Queue Processing"
+            )}
+          </Button>
         </div>
-
-        {files.length > 0 && (
-          <div className="space-y-2">
-            <p className="text-sm font-medium">Selected Files:</p>
-            {files.map((file, index) => (
-              <div
-                key={index}
-                className="flex items-center justify-between rounded-md border p-3"
-              >
-                <div className="flex items-center gap-3">
-                  <FileIcon className="h-5 w-5 text-muted-foreground" />
-                  <div>
-                    <p className="text-sm font-medium">{file.name}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {(file.size / 1024 / 1024).toFixed(2)} MB
-                    </p>
-                  </div>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => removeFile(index)}
-                >
-                  <X className="h-4 w-4" />
-                </Button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <Button
-          onClick={handleUpload}
-          disabled={files.length === 0 || isUploading}
-          className="w-full"
-        >
-          {isUploading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          Upload & Process
-        </Button>
       </div>
     </Card>
   );

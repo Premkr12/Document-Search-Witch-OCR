@@ -47,7 +47,10 @@ function runEasyOCR(filePath) {
         if (result.error) {
           return reject(new Error(result.error));
         }
-        resolve(result.text || '');
+        resolve({
+          text: result.text || '',
+          confidence: typeof result.confidence === 'number' ? result.confidence : 0
+        });
       } catch (err) {
         logger.error('Failed to parse EasyOCR stdout as JSON', { stdout: stdoutData, error: err.message });
         reject(new Error(`Invalid JSON output from EasyOCR process: ${err.message}`));
@@ -250,21 +253,30 @@ router.post('/:id/process-ocr', auth, async (req, res, next) => {
 
         // Step 3: Run OCR (EasyOCR by default, falling back to Tesseract.js)
         let text = '';
+        let confidence = 0;
+
+        doc.total_pages = 1;
+        doc.processed_pages = 0;
+        await doc.save();
+
         if (config.OCR_ENGINE === 'easyocr') {
           const tempPreprocessedPath = path.join(__dirname, '../uploads', `temp-preprocessed-${doc._id}.png`);
           try {
             fs.writeFileSync(tempPreprocessedPath, preprocessed);
-            text = await runEasyOCR(tempPreprocessedPath);
+            const ocrResult = await runEasyOCR(tempPreprocessedPath);
+            text = ocrResult.text;
+            confidence = ocrResult.confidence;
           } catch (easyOcrErr) {
             logger.warn('EasyOCR failed for image, falling back to Tesseract.js', {
               docId: doc._id,
               error: easyOcrErr.message
             });
             // Fallback to Tesseract.js
-            const { data: { text: fallbackText } } = await Tesseract.recognize(preprocessed, 'eng', {
+            const { data: { text: fallbackText, confidence: fallbackConfidence } } = await Tesseract.recognize(preprocessed, 'eng', {
               logger: m => logger.debug(`OCR [${doc.fileName}] (Fallback): ${m.status}`)
             });
             text = fallbackText;
+            confidence = fallbackConfidence;
           } finally {
             if (fs.existsSync(tempPreprocessedPath)) {
               fs.unlinkSync(tempPreprocessedPath);
@@ -272,19 +284,23 @@ router.post('/:id/process-ocr', auth, async (req, res, next) => {
           }
         } else {
           // Direct Tesseract.js
-          const { data: { text: tesseractText } } = await Tesseract.recognize(preprocessed, 'eng', {
+          const { data: { text: tesseractText, confidence: tesseractConfidence } } = await Tesseract.recognize(preprocessed, 'eng', {
             logger: m => logger.debug(`OCR [${doc.fileName}]: ${m.status}`)
           });
           text = tesseractText;
+          confidence = tesseractConfidence;
         }
 
         doc.status = 'completed';
         doc.textContent = text;
+        doc.average_confidence = Math.round(confidence);
+        doc.processed_pages = 1;
         await doc.save();
-        logger.info(`OCR completed for image`, { docId: doc._id, fileName: doc.fileName });
+        logger.info(`OCR completed for image`, { docId: doc._id, fileName: doc.fileName, confidence: doc.average_confidence });
       } catch (ocrError) {
         logger.error('Image OCR failed', { docId: doc._id, error: ocrError.message });
         doc.status = 'error';
+        doc.average_confidence = 0;
         await doc.save();
       }
 
@@ -301,6 +317,9 @@ router.post('/:id/process-ocr', auth, async (req, res, next) => {
           // PDF had a text layer — use it directly
           doc.status = 'completed';
           doc.textContent = extractedText;
+          doc.average_confidence = 100;
+          doc.total_pages = pdfData.numpages;
+          doc.processed_pages = pdfData.numpages;
           await doc.save();
           logger.info('PDF text extraction completed (text layer)', {
             docId: doc._id,
@@ -319,59 +338,77 @@ router.post('/:id/process-ocr', auth, async (req, res, next) => {
 
             const pages = pngPages.length;
             const ocrTexts = [];
+            let totalConfidence = 0;
+
+            doc.total_pages = pages;
+            doc.processed_pages = 0;
+            await doc.save();
 
             for (let i = 0; i < pages; i++) {
               const pageImage = pngPages[i];
               let pageText = '';
+              let pageConfidence = 0;
 
               if (config.OCR_ENGINE === 'easyocr') {
                 const tempPagePath = path.join(__dirname, '../uploads', `temp-page-${doc._id}-${i}.png`);
                 try {
                   fs.writeFileSync(tempPagePath, pageImage.content);
-                  pageText = await runEasyOCR(tempPagePath);
+                  const ocrResult = await runEasyOCR(tempPagePath);
+                  pageText = ocrResult.text;
+                  pageConfidence = ocrResult.confidence;
                 } catch (easyOcrErr) {
                   logger.warn(`EasyOCR failed on PDF page ${i+1}, falling back to Tesseract.js`, {
                     docId: doc._id,
                     error: easyOcrErr.message
                   });
-                  const { data: { text: fallbackText } } = await Tesseract.recognize(pageImage.content, 'eng', {
+                  const { data: { text: fallbackText, confidence: fallbackConfidence } } = await Tesseract.recognize(pageImage.content, 'eng', {
                     logger: m => logger.debug(`OCR [${doc.fileName}] Page ${i+1}/${pages} (Fallback): ${m.status}`)
                   });
                   pageText = fallbackText;
+                  pageConfidence = fallbackConfidence;
                 } finally {
                   if (fs.existsSync(tempPagePath)) {
                     fs.unlinkSync(tempPagePath);
                   }
                 }
               } else {
-                const { data: { text: directText } } = await Tesseract.recognize(pageImage.content, 'eng', {
+                const { data: { text: directText, confidence: directConfidence } } = await Tesseract.recognize(pageImage.content, 'eng', {
                   logger: m => logger.debug(`OCR [${doc.fileName}] Page ${i+1}/${pages}: ${m.status}`)
                 });
                 pageText = directText;
+                pageConfidence = directConfidence;
               }
 
               ocrTexts.push(pageText);
+              totalConfidence += pageConfidence;
+
+              doc.processed_pages = i + 1;
+              await doc.save();
             }
 
             doc.status = 'completed';
             doc.textContent = ocrTexts.join('\n\n--- Page Break ---\n\n');
+            doc.average_confidence = Math.round(totalConfidence / pages);
             await doc.save();
-            logger.info('PDF OCR completed (scanned)', { docId: doc._id, pages });
+            logger.info('PDF OCR completed (scanned)', { docId: doc._id, pages, confidence: doc.average_confidence });
           } catch (ocrFallbackError) {
             logger.error('PDF OCR fallback failed', { docId: doc._id, error: ocrFallbackError.message });
             doc.status = 'completed';
             doc.textContent = '[This PDF appears to be scanned. OCR processing failed — please verify the file integrity.]';
+            doc.average_confidence = 0;
             await doc.save();
           }
         }
       } catch (pdfError) {
         logger.error('PDF processing failed', { docId: doc._id, error: pdfError.message });
         doc.status = 'error';
+        doc.average_confidence = 0;
         await doc.save();
       }
 
     } else {
       doc.status = 'error';
+      doc.average_confidence = 0;
       await doc.save();
       logger.warn('Unsupported file type for OCR', { docId: doc._id, mimeType: doc.mimeType });
     }
