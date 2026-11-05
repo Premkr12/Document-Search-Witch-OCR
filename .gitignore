@@ -36,3 +36,10 @@ ENV/
 # Uploads and temporary data
 backend/uploads/*
 !backend/uploads/.gitkeep
+
+# Tesseract.js language data (downloaded on first use)
+*.traineddata
+
+# Python
+__pycache__/
+*.pyc

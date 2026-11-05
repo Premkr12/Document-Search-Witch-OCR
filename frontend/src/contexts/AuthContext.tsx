@@ -1,15 +1,12 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import api from '@/api/api';
-import { toast } from 'sonner';
-
-interface User {
-  id: string;
-  email: string;
-}
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import api from "@/api/api";
+import type { User } from "@/types";
 
 interface AuthContextType {
   user: User | null;
   token: string | null;
+  /** True until the stored session has been checked — don't redirect while loading. */
   loading: boolean;
   login: (token: string, refreshToken: string, user: User) => void;
   logout: () => void;
@@ -18,47 +15,63 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const queryClient = useQueryClient();
   const [user, setUser] = useState<User | null>(null);
-  const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
-  const [loading, setLoading] = useState(true);
+  const [token, setToken] = useState<string | null>(() => localStorage.getItem("token"));
+  const [loading, setLoading] = useState(() => !!localStorage.getItem("token"));
+  // login() already has the user, so the /auth/me check it triggers can be skipped
+  const skipNextCheck = useRef(false);
 
   useEffect(() => {
-    const checkAuth = async () => {
-      if (token) {
-        try {
-          // The api interceptor auto-attaches the token, but we pass it
-          // explicitly here since the interceptor reads from localStorage
-          // and we've already set it.
-          const response = await api.get('/auth/me');
-          setUser(response.data.user);
-        } catch (error) {
-          console.error("Auth check failed:", error);
-          localStorage.removeItem('token');
-          localStorage.removeItem('refreshToken');
-          setToken(null);
-          setUser(null);
-        }
-      }
+    if (!token) {
       setLoading(false);
-    };
+      return;
+    }
+    if (skipNextCheck.current) {
+      skipNextCheck.current = false;
+      setLoading(false);
+      return;
+    }
 
-    checkAuth();
+    let cancelled = false;
+    setLoading(true);
+    api
+      .get("/auth/me")
+      .then((response) => {
+        if (!cancelled) setUser(response.data.user);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        localStorage.removeItem("token");
+        localStorage.removeItem("refreshToken");
+        setToken(null);
+        setUser(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [token]);
 
-  const login = (newToken: string, newRefreshToken: string, newUser: User) => {
-    localStorage.setItem('token', newToken);
-    localStorage.setItem('refreshToken', newRefreshToken);
+  const login = useCallback((newToken: string, newRefreshToken: string, newUser: User) => {
+    localStorage.setItem("token", newToken);
+    localStorage.setItem("refreshToken", newRefreshToken);
+    skipNextCheck.current = true;
     setToken(newToken);
     setUser(newUser);
-  };
+  }, []);
 
-  const logout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('refreshToken');
+  const logout = useCallback(() => {
+    localStorage.removeItem("token");
+    localStorage.removeItem("refreshToken");
     setToken(null);
     setUser(null);
-    toast.success('Logged out successfully');
-  };
+    // Don't leave the previous user's documents in the cache
+    queryClient.clear();
+  }, [queryClient]);
 
   return (
     <AuthContext.Provider value={{ user, token, loading, login, logout }}>
@@ -70,7 +83,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 export const useAuth = () => {
   const context = useContext(AuthContext);
   if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider');
+    throw new Error("useAuth must be used within an AuthProvider");
   }
   return context;
 };

@@ -22,6 +22,12 @@ const errorHandler = (err, req, res, _next) => {
     message = `Validation failed: ${messages.join(', ')}`;
   }
 
+  // Malformed ObjectId in a URL (e.g. /api/documents/not-an-id)
+  if (err.name === 'CastError') {
+    statusCode = 404;
+    message = 'Not found';
+  }
+
   // Mongoose duplicate key (e.g. unique email)
   if (err.code === 11000) {
     statusCode = 409;
@@ -43,7 +49,7 @@ const errorHandler = (err, req, res, _next) => {
   if (err.name === 'MulterError') {
     statusCode = 400;
     if (err.code === 'LIMIT_FILE_SIZE') {
-      message = 'File too large. Maximum size is 10 MB.';
+      message = 'That file is larger than 10 MB.';
     }
   }
 

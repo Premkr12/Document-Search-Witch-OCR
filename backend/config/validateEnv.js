@@ -8,7 +8,17 @@
  * In development it falls back to safe defaults and logs warnings.
  */
 
+const path = require('path');
+
 const isProd = process.env.NODE_ENV === 'production';
+
+// Python inside backend/.venv — Scripts/ on Windows, bin/ elsewhere
+const defaultPythonPath = path.join(
+  __dirname,
+  '..',
+  '.venv',
+  process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'
+);
 
 function requireEnv(name, devDefault) {
   const value = process.env[name];
@@ -37,6 +47,12 @@ const config = {
   CORS_ORIGIN: process.env.CORS_ORIGIN || 'http://localhost:5173',
   NODE_ENV: process.env.NODE_ENV || 'development',
   OCR_ENGINE: process.env.OCR_ENGINE || 'easyocr',
+  OCR_CONCURRENCY: Math.max(1, parseInt(process.env.OCR_CONCURRENCY || '2', 10) || 2),
+  // Pages read below this confidence (%) are read again by the other engine; 0 turns it off
+  OCR_RETRY_BELOW: Math.min(100, Math.max(0, Number(process.env.OCR_RETRY_BELOW ?? 50) || 0)),
+  // An engine that spends longer than this on one page is stopped and the page goes to the other engine
+  OCR_PAGE_TIMEOUT_SECONDS: Math.max(1, Number(process.env.OCR_PAGE_TIMEOUT_SECONDS) || 180),
+  PYTHON_PATH: process.env.PYTHON_PATH || defaultPythonPath,
   SMTP_HOST: process.env.SMTP_HOST || 'smtp-relay.brevo.com',
   SMTP_PORT: parseInt(process.env.SMTP_PORT || '587', 10),
   SMTP_USER: process.env.SMTP_USER || '',

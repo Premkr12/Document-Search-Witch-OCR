@@ -7,6 +7,10 @@ if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
+// Keep in sync with the frontend's ACCEPTED_TYPES and MAX_UPLOAD_BYTES
+const ALLOWED_TYPES = ['application/pdf', 'image/png', 'image/jpeg', 'image/webp'];
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, uploadDir);
@@ -14,19 +18,20 @@ const storage = multer.diskStorage({
   filename: (req, file, cb) => {
     // Generate unique name: timestamp + random + original extension
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, uniqueSuffix + path.extname(file.originalname));
+    cb(null, uniqueSuffix + path.extname(file.originalname).toLowerCase());
   }
 });
 
-const upload = multer({ 
+const upload = multer({
   storage,
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  limits: { fileSize: MAX_FILE_SIZE },
   fileFilter: (req, file, cb) => {
-    const allowedTypes = ['application/pdf', 'image/png', 'image/jpeg', 'image/jpg'];
-    if (allowedTypes.includes(file.mimetype)) {
+    if (ALLOWED_TYPES.includes(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new Error('Invalid file type. Only PDF, PNG, and JPEG are allowed.'));
+      const err = new Error('That file type isn’t supported. Upload a PDF, PNG, JPEG or WebP file.');
+      err.statusCode = 400;
+      cb(err);
     }
   }
 });
