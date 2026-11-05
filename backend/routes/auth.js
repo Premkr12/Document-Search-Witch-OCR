@@ -1,7 +1,10 @@
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const User = require('../models/User');
+const Document = require('../models/Document');
 const auth = require('../middleware/auth');
 const config = require('../config/validateEnv');
 const logger = require('../config/logger');
@@ -9,6 +12,13 @@ const crypto = require('crypto');
 const { sendEmail } = require('../config/mailer');
 
 const router = express.Router();
+
+const MIN_PASSWORD_LENGTH = 8;
+
+// Reset tokens are stored hashed so a database leak can't be used to reset passwords
+const hashToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
+
+const publicUser = (user) => ({ id: user._id, email: user.email, createdAt: user.createdAt });
 
 /**
  * Generate a short-lived access token (15 min) and a long-lived refresh token (7 days).
@@ -28,8 +38,8 @@ router.post('/register', async (req, res, next) => {
       return res.status(400).json({ message: 'Email and password are required' });
     }
 
-    if (password.length < 6) {
-      return res.status(400).json({ message: 'Password must be at least 6 characters' });
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      return res.status(400).json({ message: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` });
     }
 
     // Check if user already exists
@@ -55,10 +65,7 @@ router.post('/register', async (req, res, next) => {
     const { accessToken, refreshToken } = generateTokens(user._id);
 
     res.status(201).json({
-      user: {
-        id: user._id,
-        email: user.email
-      },
+      user: publicUser(user),
       token: accessToken,
       refreshToken,
     });
@@ -90,10 +97,7 @@ router.post('/login', async (req, res, next) => {
     const { accessToken, refreshToken } = generateTokens(user._id);
 
     res.json({
-      user: {
-        id: user._id,
-        email: user.email
-      },
+      user: publicUser(user),
       token: accessToken,
       refreshToken,
     });
@@ -139,12 +143,57 @@ router.post('/refresh', async (req, res, next) => {
 // ── GET /me — Get current user ───────────────────────────────────────────────
 router.get('/me', auth, async (req, res, next) => {
   try {
-    res.json({
-      user: {
-        id: req.user._id,
-        email: req.user.email
-      }
-    });
+    res.json({ user: publicUser(req.user) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── POST /change-password — change password while signed in ─────────────────
+router.post('/change-password', auth, async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ message: 'Enter your current and new password.' });
+    }
+    if (newPassword.length < MIN_PASSWORD_LENGTH) {
+      return res.status(400).json({ message: `Your new password must be at least ${MIN_PASSWORD_LENGTH} characters.` });
+    }
+
+    const isMatch = await bcrypt.compare(currentPassword, req.user.password);
+    if (!isMatch) {
+      // 400, not 401 — a 401 would make the client try to refresh its token
+      return res.status(400).json({ message: 'Your current password is incorrect.' });
+    }
+
+    req.user.password = await bcrypt.hash(newPassword, await bcrypt.genSalt(10));
+    await req.user.save();
+    logger.info('Password changed', { email: req.user.email });
+
+    res.json({ message: 'Password changed' });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── DELETE /me — delete the account, its documents and their files ──────────
+router.delete('/me', auth, async (req, res, next) => {
+  try {
+    const { password } = req.body || {};
+    if (!password || !(await bcrypt.compare(password, req.user.password))) {
+      return res.status(400).json({ message: 'Your password is incorrect.' });
+    }
+
+    const docs = await Document.find({ userId: req.user._id }).select('fileName').lean();
+    const uploadDir = path.join(__dirname, '../uploads');
+    await Promise.all(docs.map((d) =>
+      fs.promises.rm(path.join(uploadDir, path.basename(d.fileName)), { force: true })));
+    await Document.deleteMany({ userId: req.user._id });
+    await User.deleteOne({ _id: req.user._id });
+
+    logger.info('Account deleted', { userId: req.user._id, documents: docs.length });
+    res.json({ message: 'Account deleted' });
   } catch (error) {
     next(error);
   }
@@ -175,7 +224,7 @@ router.post('/forgot-password', async (req, res, next) => {
     const resetToken = crypto.randomBytes(32).toString('hex');
     const resetExpires = Date.now() + 3600000; // 1 hour
 
-    user.resetPasswordToken = resetToken;
+    user.resetPasswordToken = hashToken(resetToken);
     user.resetPasswordExpires = resetExpires;
     await user.save();
 
@@ -221,13 +270,13 @@ router.post('/reset-password', async (req, res, next) => {
       return res.status(400).json({ message: 'Token and new password are required' });
     }
 
-    if (password.length < 8) {
-      return res.status(400).json({ message: 'Password must be at least 8 characters long' });
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      return res.status(400).json({ message: `Password must be at least ${MIN_PASSWORD_LENGTH} characters long` });
     }
 
     // Find user with matching, non-expired token
     const user = await User.findOne({
-      resetPasswordToken: token,
+      resetPasswordToken: hashToken(String(token)),
       resetPasswordExpires: { $gt: Date.now() },
     });
 

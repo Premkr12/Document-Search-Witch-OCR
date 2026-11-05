@@ -1,154 +1,77 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
-const Tesseract = require('tesseract.js');
-const pdfParse = require('pdf-parse');
 const Document = require('../models/Document');
 const auth = require('../middleware/auth');
 const upload = require('../middleware/upload');
 const logger = require('../config/logger');
-const config = require('../config/validateEnv');
+const ocr = require('../services/ocr');
 
 const router = express.Router();
 
-// Helper to run Python-based EasyOCR child process
-function runEasyOCR(filePath) {
-  return new Promise((resolve, reject) => {
-    // Virtual environment python executable and script path
-    const pythonPath = path.join(__dirname, '../.venv/Scripts/python.exe');
-    const scriptPath = path.join(__dirname, '../scripts/ocr_process.py');
+// Completed OCR results below this average confidence are flagged for attention
+const LOW_CONFIDENCE = 70;
 
-    logger.info('Spawning EasyOCR process', { filePath, pythonPath, scriptPath });
+// Fields left out of list responses — they can be large
+const SUMMARY_FIELDS = '-textContent -pages -fileUrl';
 
-    const pyProcess = spawn(pythonPath, [scriptPath, filePath], {
-      env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-    });
+const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-    let stdoutData = '';
-    let stderrData = '';
+const lowConfidenceFilter = {
+  status: 'completed',
+  engine: { $ne: 'pdf-text' },
+  average_confidence: { $ne: null, $lt: LOW_CONFIDENCE },
+};
 
-    pyProcess.stdout.on('data', (data) => {
-      stdoutData += data.toString();
-    });
-
-    pyProcess.stderr.on('data', (data) => {
-      stderrData += data.toString();
-    });
-
-    pyProcess.on('close', (code) => {
-      if (code !== 0) {
-        logger.error('EasyOCR process failed', { code, stderr: stderrData.trim() });
-        return reject(new Error(`EasyOCR process exited with code ${code}: ${stderrData.trim()}`));
-      }
-
-      try {
-        const result = JSON.parse(stdoutData.trim());
-        if (result.error) {
-          return reject(new Error(result.error));
-        }
-        resolve({
-          text: result.text || '',
-          confidence: typeof result.confidence === 'number' ? result.confidence : 0
-        });
-      } catch (err) {
-        logger.error('Failed to parse EasyOCR stdout as JSON', { stdout: stdoutData, error: err.message });
-        reject(new Error(`Invalid JSON output from EasyOCR process: ${err.message}`));
-      }
-    });
-
-    pyProcess.on('error', (err) => {
-      logger.error('Failed to spawn EasyOCR process', { error: err.message });
-      reject(err);
-    });
-  });
+function statusFilter(status) {
+  switch (status) {
+    case 'ready': return { status: 'completed' };
+    case 'progress': return { status: { $in: ['pending', 'processing'] } };
+    case 'attention': return { $or: [{ status: 'error' }, lowConfidenceFilter] };
+    default: return {};
+  }
 }
 
-// ── GET / — list all documents for current user (PAGINATED) ──────────────────
+const SORTS = {
+  newest: { createdAt: -1 },
+  oldest: { createdAt: 1 },
+  title: { title: 1, createdAt: -1 },
+};
+
+// Older documents stored all pages in textContent separated by a marker
+function pagesOf(doc) {
+  if (doc.pages && doc.pages.length) return doc.pages;
+  return (doc.textContent || '').split(/\n*--- Page Break ---\n*/);
+}
+
+function snippetAround(text, index, length) {
+  const start = Math.max(0, text.lastIndexOf(' ', Math.max(0, index - 80)));
+  const endSpace = text.indexOf(' ', index + length + 110);
+  const end = endSpace === -1 ? text.length : endSpace;
+  return (start > 0 ? '…' : '') + text.slice(start, end).trim() + (end < text.length ? '…' : '');
+}
+
+// ── GET / — list the current user's documents (paginated, filterable) ────────
 router.get('/', auth, async (req, res, next) => {
   try {
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 24));
     const skip = (page - 1) * limit;
 
+    const filter = { userId: req.user._id, ...statusFilter(req.query.status) };
+    if (typeof req.query.q === 'string' && req.query.q.trim()) {
+      filter.title = { $regex: escapeRegex(req.query.q.trim()), $options: 'i' };
+    }
+    if (typeof req.query.ids === 'string' && req.query.ids) {
+      filter._id = { $in: req.query.ids.split(',').slice(0, 100) };
+    }
+
     const [documents, totalCount] = await Promise.all([
-      Document.find({ userId: req.user._id })
-        .sort({ createdAt: -1 })
+      Document.find(filter)
+        .select(SUMMARY_FIELDS)
+        .sort(SORTS[req.query.sort] || SORTS.newest)
         .skip(skip)
         .limit(limit),
-      Document.countDocuments({ userId: req.user._id }),
-    ]);
-
-    res.json({
-      documents,
-      totalCount,
-      page,
-      totalPages: Math.ceil(totalCount / limit),
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// ── POST /upload — upload a new document ──────────────────────────────────────
-router.post('/upload', auth, upload.single('file'), async (req, res, next) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ message: 'No file uploaded' });
-    }
-
-    const baseUrl = `${req.protocol}://${req.get('host')}`;
-    const fileUrl = `${baseUrl}/uploads/${req.file.filename}`;
-
-    const originalName = req.file.originalname;
-    const title = req.body.title ||
-      originalName.substring(0, originalName.lastIndexOf('.')) ||
-      originalName;
-
-    const doc = new Document({
-      title,
-      fileName: req.file.filename,
-      fileUrl,
-      mimeType: req.file.mimetype,
-      userId: req.user._id,
-      status: 'pending'
-    });
-
-    await doc.save();
-    logger.info('Document uploaded', { docId: doc._id, title, mimeType: doc.mimeType });
-    res.status(201).json(doc);
-  } catch (error) {
-    next(error);
-  }
-});
-
-// ── POST /search — full-text search across title and OCR text (PAGINATED) ────
-// IMPORTANT: must be declared before /:id routes to avoid route shadowing.
-router.post('/search', auth, async (req, res, next) => {
-  try {
-    const { query, page: rawPage, limit: rawLimit } = req.body;
-    if (!query || !query.trim()) {
-      return res.json({ documents: [], totalCount: 0, page: 1, totalPages: 0 });
-    }
-
-    const page = Math.max(1, parseInt(rawPage, 10) || 1);
-    const limit = Math.min(100, Math.max(1, parseInt(rawLimit, 10) || 20));
-    const skip = (page - 1) * limit;
-
-    // Match any of the query words, case-insensitive, across title + textContent
-    const words = query.trim().split(/\s+/).filter(Boolean);
-    const regex = new RegExp(words.join('|'), 'i');
-
-    const filter = {
-      userId: req.user._id,
-      $or: [
-        { title: { $regex: regex } },
-        { textContent: { $regex: regex } }
-      ]
-    };
-
-    const [documents, totalCount] = await Promise.all([
-      Document.find(filter).skip(skip).limit(limit),
       Document.countDocuments(filter),
     ]);
 
@@ -163,260 +86,259 @@ router.post('/search', auth, async (req, res, next) => {
   }
 });
 
-// ── GET /:id — fetch a single document ────────────────────────────────────────
+// ── GET /stats — counts for the library header and filters ──────────────────
+router.get('/stats', auth, async (req, res, next) => {
+  try {
+    const userId = req.user._id;
+    const [byStatus, lowConfidence] = await Promise.all([
+      Document.aggregate([
+        { $match: { userId } },
+        { $group: { _id: '$status', count: { $sum: 1 } } },
+      ]),
+      Document.countDocuments({ userId, ...lowConfidenceFilter }),
+    ]);
+
+    const counts = Object.fromEntries(byStatus.map((s) => [s._id, s.count]));
+    const completed = counts.completed || 0;
+    const processing = counts.processing || 0;
+    const pending = counts.pending || 0;
+    const error = counts.error || 0;
+
+    res.json({
+      total: completed + processing + pending + error,
+      completed,
+      processing,
+      pending,
+      error,
+      lowConfidence,
+      attention: error + lowConfidence,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── POST /upload — store a file and queue it for reading ─────────────────────
+router.post('/upload', auth, upload.single('file'), async (req, res, next) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'Choose a file to upload.' });
+    }
+
+    const originalName = req.file.originalname;
+    const dot = originalName.lastIndexOf('.');
+    const title = (req.body.title || '').trim() || (dot > 0 ? originalName.substring(0, dot) : originalName);
+    const language = ocr.LANGUAGES[req.body.language] ? req.body.language : 'eng';
+
+    const doc = new Document({
+      title: title.slice(0, 200),
+      fileName: req.file.filename,
+      originalName,
+      mimeType: req.file.mimetype,
+      size: req.file.size,
+      language,
+      userId: req.user._id,
+      status: 'pending',
+      processed_pages: 0,
+    });
+
+    await doc.save();
+    logger.info('Document uploaded', { docId: doc._id, mimeType: doc.mimeType, language });
+
+    ocr.enqueue(doc._id);
+    res.status(201).json(doc);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── POST /search — search every page of the user's documents ─────────────────
+// IMPORTANT: must be declared before /:id routes to avoid route shadowing.
+router.post('/search', auth, async (req, res, next) => {
+  try {
+    const { query, type, language, since, minConfidence } = req.body;
+    const page = Math.max(1, parseInt(req.body.page, 10) || 1);
+    const limit = Math.min(50, Math.max(1, parseInt(req.body.limit, 10) || 20));
+
+    const terms = typeof query === 'string'
+      ? query.trim().split(/\s+/).filter(Boolean).slice(0, 10).map(escapeRegex)
+      : [];
+    if (!terms.length) {
+      return res.json({ results: [], totalCount: 0, totalMatches: 0, page: 1, totalPages: 0 });
+    }
+
+    const pattern = terms.join('|');
+    const filter = {
+      userId: req.user._id,
+      status: 'completed',
+      $or: [
+        { title: { $regex: pattern, $options: 'i' } },
+        { textContent: { $regex: pattern, $options: 'i' } },
+      ],
+    };
+    if (type === 'pdf') filter.mimeType = 'application/pdf';
+    if (type === 'image') filter.mimeType = { $regex: '^image/' };
+    if (typeof language === 'string' && ocr.LANGUAGES[language]) filter.language = language;
+    const sinceDays = parseInt(since, 10);
+    if (sinceDays > 0) filter.createdAt = { $gte: new Date(Date.now() - sinceDays * 86400000) };
+    const minConf = parseInt(minConfidence, 10);
+    if (minConf > 0) {
+      filter.$and = [{ $or: [{ engine: 'pdf-text' }, { average_confidence: { $gte: minConf } }] }];
+    }
+
+    const docs = await Document.find(filter)
+      .select('title originalName fileName mimeType language engine average_confidence total_pages createdAt status pages textContent')
+      .limit(500)
+      .lean();
+
+    const matcher = new RegExp(pattern, 'gi');
+    const titleMatcher = new RegExp(pattern, 'i');
+
+    const results = docs.map((doc) => {
+      const hits = [];
+      let matchCount = 0;
+      pagesOf(doc).forEach((text, i) => {
+        const flat = (text || '').replace(/\s+/g, ' ');
+        const found = [...flat.matchAll(matcher)];
+        if (!found.length) return;
+        matchCount += found.length;
+        hits.push({
+          page: i + 1,
+          count: found.length,
+          snippet: snippetAround(flat, found[0].index, found[0][0].length),
+        });
+      });
+      const { pages, textContent, ...summary } = doc;
+      return {
+        document: summary,
+        matchCount,
+        titleMatch: titleMatcher.test(doc.title),
+        hits: hits.slice(0, 5),
+        pagesWithMatches: hits.length,
+      };
+    });
+
+    results.sort((a, b) =>
+      (b.matchCount + (b.titleMatch ? 1 : 0)) - (a.matchCount + (a.titleMatch ? 1 : 0)) ||
+      new Date(b.document.createdAt) - new Date(a.document.createdAt));
+
+    const totalMatches = results.reduce((sum, r) => sum + r.matchCount, 0);
+    const start = (page - 1) * limit;
+
+    res.json({
+      results: results.slice(start, start + limit),
+      totalCount: results.length,
+      totalMatches,
+      page,
+      totalPages: Math.ceil(results.length / limit),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── GET /:id — fetch a single document with its text ─────────────────────────
 router.get('/:id', auth, async (req, res, next) => {
   try {
     const doc = await Document.findOne({ _id: req.params.id, userId: req.user._id });
     if (!doc) {
       return res.status(404).json({ message: 'Document not found' });
     }
+    const json = doc.toJSON();
+    json.pages = pagesOf(doc);
+    res.json(json);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── GET /:id/file — the original file, only for its owner ────────────────────
+router.get('/:id/file', auth, async (req, res, next) => {
+  try {
+    const doc = await Document.findOne({ _id: req.params.id, userId: req.user._id }).select('fileName mimeType');
+    if (!doc) {
+      return res.status(404).json({ message: 'Document not found' });
+    }
+    const filePath = path.join(ocr.UPLOAD_DIR, path.basename(doc.fileName));
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ message: 'The original file is missing.' });
+    }
+    res.set('Cache-Control', 'private, max-age=300');
+    res.type(doc.mimeType);
+    res.sendFile(filePath);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── PATCH /:id — rename a document ───────────────────────────────────────────
+router.patch('/:id', auth, async (req, res, next) => {
+  try {
+    const title = typeof req.body.title === 'string' ? req.body.title.trim() : '';
+    if (!title) {
+      return res.status(400).json({ message: 'Enter a title.' });
+    }
+    if (title.length > 200) {
+      return res.status(400).json({ message: 'Titles can be up to 200 characters.' });
+    }
+
+    const doc = await Document.findOne({ _id: req.params.id, userId: req.user._id }).select(SUMMARY_FIELDS);
+    if (!doc) {
+      return res.status(404).json({ message: 'Document not found' });
+    }
+    doc.title = title;
+    await doc.save();
     res.json(doc);
   } catch (error) {
     next(error);
   }
 });
 
-// ── DELETE /:id — delete a document and its file ──────────────────────────────
+// ── DELETE /:id — delete a document and its file ─────────────────────────────
 router.delete('/:id', auth, async (req, res, next) => {
   try {
-    const doc = await Document.findOne({ _id: req.params.id, userId: req.user._id });
+    const doc = await Document.findOne({ _id: req.params.id, userId: req.user._id }).select('fileName');
     if (!doc) {
       return res.status(404).json({ message: 'Document not found' });
     }
 
-    const filePath = path.join(__dirname, '../uploads', doc.fileName);
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
-
+    // Stop reading it first, so its queue slot is freed straight away
+    ocr.cancel(doc._id);
+    await fs.promises.rm(path.join(ocr.UPLOAD_DIR, path.basename(doc.fileName)), { force: true });
     await Document.deleteOne({ _id: doc._id });
     logger.info('Document deleted', { docId: doc._id });
-    res.json({ message: 'Document deleted successfully' });
+    res.json({ message: 'Document deleted' });
   } catch (error) {
     next(error);
   }
 });
 
-// ── POST /:id/process-ocr — run OCR / text extraction on the document ────────
+// ── POST /:id/process-ocr — read (or re-read) a document ────────────────────
 router.post('/:id/process-ocr', auth, async (req, res, next) => {
   try {
-    const doc = await Document.findOne({ _id: req.params.id, userId: req.user._id });
+    const doc = await Document.findOne({ _id: req.params.id, userId: req.user._id }).select(SUMMARY_FIELDS);
     if (!doc) {
       return res.status(404).json({ message: 'Document not found' });
     }
+    // Ask the queue rather than trusting the status: a document left as
+    // "processing" by a crash or restart can be read again
+    if (ocr.isQueued(doc._id)) {
+      return res.status(409).json({ message: 'This document is already being read.' });
+    }
 
-    doc.status = 'processing';
+    // Optionally re-read in a different language
+    const language = req.body && req.body.language;
+    if (language && ocr.LANGUAGES[language]) doc.language = language;
+
+    doc.status = 'pending';
+    doc.processed_pages = 0;
+    doc.errorMessage = null;
     await doc.save();
 
-    // Respond immediately — extraction runs async after response
-    res.json({ message: 'OCR processing started', document: doc });
-
-    const filePath = path.join(__dirname, '../uploads', doc.fileName);
-
-    if (doc.mimeType.startsWith('image/')) {
-      // ── Image → Sharp preprocessing + Tesseract OCR ────────────────────
-      try {
-        const sharp = require('sharp');
-
-        // Step 1: Detect orientation using Tesseract OSD
-        let rotationAngle = 0;
-        try {
-          const osd = await Tesseract.detect(filePath);
-          if (osd.data && osd.data.orientation_degrees && osd.data.orientation_confidence > 0.5) {
-            // OSD reports the angle the text is AT; we rotate by (360 - that) to upright it
-            rotationAngle = (360 - osd.data.orientation_degrees) % 360;
-            logger.info('Detected image orientation', {
-              docId: doc._id,
-              detectedAngle: osd.data.orientation_degrees,
-              correction: rotationAngle,
-              confidence: osd.data.orientation_confidence,
-            });
-          }
-        } catch (osdErr) {
-          logger.warn('OSD detection failed, proceeding without rotation', {
-            docId: doc._id,
-            error: osdErr.message,
-          });
-        }
-
-        // Step 2: Preprocess image with sharp
-        const preprocessed = await sharp(filePath)
-          .rotate(rotationAngle)                         // Fix orientation
-          .greyscale()                                   // Convert to greyscale
-          .sharpen({ sigma: 1.5 })                       // Sharpen text edges
-          .normalise()                                   // Stretch contrast
-          .resize({ width: 3000, withoutEnlargement: true }) // Ensure high-res
-          .png()
-          .toBuffer();
-
-        logger.debug('Image preprocessed', { docId: doc._id, bytes: preprocessed.length });
-
-        // Step 3: Run OCR (EasyOCR by default, falling back to Tesseract.js)
-        let text = '';
-        let confidence = 0;
-
-        doc.total_pages = 1;
-        doc.processed_pages = 0;
-        await doc.save();
-
-        if (config.OCR_ENGINE === 'easyocr') {
-          const tempPreprocessedPath = path.join(__dirname, '../uploads', `temp-preprocessed-${doc._id}.png`);
-          try {
-            fs.writeFileSync(tempPreprocessedPath, preprocessed);
-            const ocrResult = await runEasyOCR(tempPreprocessedPath);
-            text = ocrResult.text;
-            confidence = ocrResult.confidence;
-          } catch (easyOcrErr) {
-            logger.warn('EasyOCR failed for image, falling back to Tesseract.js', {
-              docId: doc._id,
-              error: easyOcrErr.message
-            });
-            // Fallback to Tesseract.js
-            const { data: { text: fallbackText, confidence: fallbackConfidence } } = await Tesseract.recognize(preprocessed, 'eng', {
-              logger: m => logger.debug(`OCR [${doc.fileName}] (Fallback): ${m.status}`)
-            });
-            text = fallbackText;
-            confidence = fallbackConfidence;
-          } finally {
-            if (fs.existsSync(tempPreprocessedPath)) {
-              fs.unlinkSync(tempPreprocessedPath);
-            }
-          }
-        } else {
-          // Direct Tesseract.js
-          const { data: { text: tesseractText, confidence: tesseractConfidence } } = await Tesseract.recognize(preprocessed, 'eng', {
-            logger: m => logger.debug(`OCR [${doc.fileName}]: ${m.status}`)
-          });
-          text = tesseractText;
-          confidence = tesseractConfidence;
-        }
-
-        doc.status = 'completed';
-        doc.textContent = text;
-        doc.average_confidence = Math.round(confidence);
-        doc.processed_pages = 1;
-        await doc.save();
-        logger.info(`OCR completed for image`, { docId: doc._id, fileName: doc.fileName, confidence: doc.average_confidence });
-      } catch (ocrError) {
-        logger.error('Image OCR failed', { docId: doc._id, error: ocrError.message });
-        doc.status = 'error';
-        doc.average_confidence = 0;
-        await doc.save();
-      }
-
-    } else if (doc.mimeType === 'application/pdf') {
-      // ── PDF → pdf-parse (text layer) with Tesseract fallback (scanned) ─
-      try {
-        const dataBuffer = fs.readFileSync(filePath);
-        const pdfData = await pdfParse(dataBuffer);
-
-        // pdf-parse returns whitespace-only text for scanned PDFs
-        const extractedText = (pdfData.text || '').trim();
-
-        if (extractedText.length > 0) {
-          // PDF had a text layer — use it directly
-          doc.status = 'completed';
-          doc.textContent = extractedText;
-          doc.average_confidence = 100;
-          doc.total_pages = pdfData.numpages;
-          doc.processed_pages = pdfData.numpages;
-          await doc.save();
-          logger.info('PDF text extraction completed (text layer)', {
-            docId: doc._id,
-            pages: pdfData.numpages,
-            chars: extractedText.length,
-          });
-        } else {
-          // Scanned PDF — fall back to pdf-to-png-converter + Tesseract
-          logger.info('PDF has no text layer, attempting OCR via pdf-to-png-converter', { docId: doc._id });
-
-          try {
-            const { pdfToPng } = require('pdf-to-png-converter');
-            const pngPages = await pdfToPng(filePath, {
-              viewportScale: 1.5,
-            });
-
-            const pages = pngPages.length;
-            const ocrTexts = [];
-            let totalConfidence = 0;
-
-            doc.total_pages = pages;
-            doc.processed_pages = 0;
-            await doc.save();
-
-            for (let i = 0; i < pages; i++) {
-              const pageImage = pngPages[i];
-              let pageText = '';
-              let pageConfidence = 0;
-
-              if (config.OCR_ENGINE === 'easyocr') {
-                const tempPagePath = path.join(__dirname, '../uploads', `temp-page-${doc._id}-${i}.png`);
-                try {
-                  fs.writeFileSync(tempPagePath, pageImage.content);
-                  const ocrResult = await runEasyOCR(tempPagePath);
-                  pageText = ocrResult.text;
-                  pageConfidence = ocrResult.confidence;
-                } catch (easyOcrErr) {
-                  logger.warn(`EasyOCR failed on PDF page ${i+1}, falling back to Tesseract.js`, {
-                    docId: doc._id,
-                    error: easyOcrErr.message
-                  });
-                  const { data: { text: fallbackText, confidence: fallbackConfidence } } = await Tesseract.recognize(pageImage.content, 'eng', {
-                    logger: m => logger.debug(`OCR [${doc.fileName}] Page ${i+1}/${pages} (Fallback): ${m.status}`)
-                  });
-                  pageText = fallbackText;
-                  pageConfidence = fallbackConfidence;
-                } finally {
-                  if (fs.existsSync(tempPagePath)) {
-                    fs.unlinkSync(tempPagePath);
-                  }
-                }
-              } else {
-                const { data: { text: directText, confidence: directConfidence } } = await Tesseract.recognize(pageImage.content, 'eng', {
-                  logger: m => logger.debug(`OCR [${doc.fileName}] Page ${i+1}/${pages}: ${m.status}`)
-                });
-                pageText = directText;
-                pageConfidence = directConfidence;
-              }
-
-              ocrTexts.push(pageText);
-              totalConfidence += pageConfidence;
-
-              doc.processed_pages = i + 1;
-              await doc.save();
-            }
-
-            doc.status = 'completed';
-            doc.textContent = ocrTexts.join('\n\n--- Page Break ---\n\n');
-            doc.average_confidence = Math.round(totalConfidence / pages);
-            await doc.save();
-            logger.info('PDF OCR completed (scanned)', { docId: doc._id, pages, confidence: doc.average_confidence });
-          } catch (ocrFallbackError) {
-            logger.error('PDF OCR fallback failed', { docId: doc._id, error: ocrFallbackError.message });
-            doc.status = 'completed';
-            doc.textContent = '[This PDF appears to be scanned. OCR processing failed — please verify the file integrity.]';
-            doc.average_confidence = 0;
-            await doc.save();
-          }
-        }
-      } catch (pdfError) {
-        logger.error('PDF processing failed', { docId: doc._id, error: pdfError.message });
-        doc.status = 'error';
-        doc.average_confidence = 0;
-        await doc.save();
-      }
-
-    } else {
-      doc.status = 'error';
-      doc.average_confidence = 0;
-      await doc.save();
-      logger.warn('Unsupported file type for OCR', { docId: doc._id, mimeType: doc.mimeType });
-    }
+    ocr.enqueue(doc._id);
+    res.status(202).json(doc);
   } catch (error) {
-    logger.error('Error starting OCR', { error: error.message });
-    if (!res.headersSent) {
-      next(error);
-    }
+    next(error);
   }
 });
 

@@ -23,19 +23,9 @@ process.on('uncaughtException', (error) => {
 });
 
 // ── Security Headers ─────────────────────────────────────────────────────────
-app.use(helmet({
-  crossOriginResourcePolicy: false,
-  crossOriginEmbedderPolicy: false,
-  frameguard: false,
-  contentSecurityPolicy: {
-    directives: {
-      ...helmet.contentSecurityPolicy.getDefaultDirectives(),
-      "frame-ancestors": ["'self'", config.CORS_ORIGIN],
-      "frame-src": ["'self'", "http://localhost:5000", config.CORS_ORIGIN],
-      "img-src": ["'self'", "data:", "blob:", "http://localhost:5000", config.CORS_ORIGIN],
-    },
-  },
-}));
+// Files are fetched by the client with its auth token and shown from blob: URLs,
+// so the API never needs to be framed or embedded cross-origin.
+app.use(helmet());
 
 // ── CORS — Restricted to configured origin ───────────────────────────────────
 app.use(cors({
@@ -47,10 +37,11 @@ app.use(cors({
 app.use(express.json());
 
 // ── Rate Limiting ────────────────────────────────────────────────────────────
-// General API limiter
+// General API limiter. The client polls every few seconds while documents are
+// being read, so this needs headroom above ~450 requests per window.
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100,
+  max: 1000,
   standardHeaders: true,
   legacyHeaders: false,
   message: { message: 'Too many requests, please try again later.' },
@@ -67,6 +58,9 @@ const authLimiter = rateLimit({
 });
 app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/register', authLimiter);
+app.use('/api/auth/forgot-password', authLimiter);
+app.use('/api/auth/reset-password', authLimiter);
+app.use('/api/auth/change-password', authLimiter);
 
 // Upload limiter
 const uploadLimiter = rateLimit({
@@ -78,14 +72,14 @@ const uploadLimiter = rateLimit({
 });
 app.use('/api/documents/upload', uploadLimiter);
 
-// ── Static uploads directory ─────────────────────────────────────────────────
+// ── Uploads directory ────────────────────────────────────────────────────────
+// Files are NOT served statically — GET /api/documents/:id/file checks ownership.
 // TODO: Migrate to cloud storage (AWS S3 / Cloudinary) for production.
 // Local disk storage is ephemeral on most cloud platforms.
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // ── Routes ───────────────────────────────────────────────────────────────────
 const authRoutes = require('./routes/auth');
@@ -109,7 +103,10 @@ mongoose.connect(config.MONGO_URI)
       logger.info(`Server is running on port ${config.PORT}`);
       logger.info(`CORS origin: ${config.CORS_ORIGIN}`);
       logger.info(`Environment: ${config.NODE_ENV}`);
+      logger.info(`OCR engine: ${config.OCR_ENGINE}`);
     });
+    require('./services/ocr').resumeInterrupted()
+      .catch((err) => logger.error('Could not resume interrupted documents', { error: err.message }));
   })
   .catch(err => {
     logger.error('Failed to connect to MongoDB', { error: err.message });
